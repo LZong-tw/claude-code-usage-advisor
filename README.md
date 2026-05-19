@@ -1,6 +1,12 @@
 # Claude Code Usage Advisor
 
-Out-of-the-box Claude Code usage analyzer that recommends model and settings profiles from your local Claude Code history.
+[![Node.js 18+](https://img.shields.io/badge/node-%3E%3D18-339933)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![No dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
+
+Stop guessing which Claude Code model and settings to use.
+
+Claude Code Usage Advisor analyzes your local Claude Code history and recommends practical launch profiles for `sonnet`, `opusplan`, `opus[1m]`, `haiku`, effort level, permission mode, sandboxing, and prompt caching.
 
 It is read-only, zero-dependency, and runs locally against `~/.claude`.
 
@@ -47,6 +53,12 @@ cc-advisor --json
 cc-advisor --no-snippets
 cc-advisor --claude-dir ~/.claude
 cc-advisor --max-files 100
+```
+
+Without installing:
+
+```bash
+npx claude-code-usage-advisor --days 7
 ```
 
 Options:
