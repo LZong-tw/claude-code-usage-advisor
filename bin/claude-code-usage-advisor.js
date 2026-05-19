@@ -63,6 +63,7 @@ Options:
   --days <n>            Analyze JSONL records from the last n days (default: 30, 0 = all)
   --max-files <n>       Cap scanned JSONL files, newest first (default: unlimited)
   --json                Print machine-readable JSON
+  --html <path>         Write a self-contained HTML report
   --no-snippets         Hide settings snippets in text output
   --help                Show help
 
@@ -78,6 +79,7 @@ function parseArgs(argv) {
     days: 30,
     maxFiles: 0,
     json: false,
+    htmlPath: null,
     snippets: true,
     help: false,
   };
@@ -88,6 +90,10 @@ function parseArgs(argv) {
       args.help = true;
     } else if (arg === "--json") {
       args.json = true;
+    } else if (arg === "--html") {
+      args.htmlPath = requireValue(argv, ++i, "--html");
+    } else if (arg.startsWith("--html=")) {
+      args.htmlPath = arg.slice("--html=".length);
     } else if (arg === "--no-snippets") {
       args.snippets = false;
     } else if (arg === "--claude-dir") {
@@ -108,6 +114,7 @@ function parseArgs(argv) {
   }
 
   args.claudeDir = expandHome(args.claudeDir);
+  if (args.htmlPath) args.htmlPath = path.resolve(expandHome(args.htmlPath));
   return args;
 }
 
@@ -1088,6 +1095,296 @@ function printTextReport(report, options = {}) {
   return lines.join("\n");
 }
 
+function renderHtmlReport(report) {
+  const settings = report.settings;
+  const jsonl = report.jsonl;
+  const priorityOrder = { high: 0, medium: 1, low: 2 };
+  const recommendations = [...(report.recommendations || [])].sort((a, b) => (priorityOrder[a.priority] ?? 9) - (priorityOrder[b.priority] ?? 9));
+  const insights = [...(report.additional_insights || [])].sort((a, b) => (priorityOrder[a.priority] ?? 9) - (priorityOrder[b.priority] ?? 9));
+  const usageEntries = Object.entries(report.stats_cache.modelUsage || {}).sort((a, b) => freshTotal(b[1]) - freshTotal(a[1]));
+  const totalFresh = usageEntries.reduce((sum, [, values]) => sum + freshTotal(values), 0);
+  const generatedAt = new Date().toISOString();
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude Code Usage Insights</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --panel-2: #f0f3f6;
+      --text: #17202a;
+      --muted: #5f6b7a;
+      --line: #d9dee5;
+      --accent: #2457c5;
+      --high: #b42318;
+      --medium: #9a6700;
+      --low: #3b6f2a;
+      --code: #0f172a;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101317;
+        --panel: #171b21;
+        --panel-2: #20262e;
+        --text: #eef2f7;
+        --muted: #a8b0bb;
+        --line: #303842;
+        --accent: #8ab4ff;
+        --code: #e7edf7;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+    }
+    main {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 36px 0 64px;
+    }
+    header {
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+    h1, h2, h3 { line-height: 1.15; margin: 0; }
+    h1 { font-size: clamp(30px, 4vw, 46px); letter-spacing: 0; }
+    h2 { font-size: 24px; margin-bottom: 14px; }
+    h3 { font-size: 17px; margin-bottom: 8px; }
+    p { margin: 0; }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--code);
+    }
+    pre {
+      overflow: auto;
+      padding: 14px;
+      border-radius: 8px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      font-size: 13px;
+    }
+    section {
+      margin-top: 22px;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 650; }
+    .lede { max-width: 760px; margin-top: 12px; color: var(--muted); font-size: 17px; }
+    .meta { margin-top: 16px; color: var(--muted); font-size: 14px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .metric, .card {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+    }
+    .metric .label { color: var(--muted); font-size: 13px; }
+    .metric .value { display: block; margin-top: 4px; font-size: 22px; font-weight: 750; }
+    .cards { display: grid; gap: 12px; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      border: 1px solid var(--line);
+      margin-right: 8px;
+    }
+    .badge.high { color: var(--high); }
+    .badge.medium { color: var(--medium); }
+    .badge.low { color: var(--low); }
+    .muted { color: var(--muted); }
+    .split {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+    }
+    .command {
+      display: block;
+      margin-top: 8px;
+      padding: 10px;
+      border-radius: 8px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      overflow-wrap: anywhere;
+    }
+    details { margin-top: 12px; }
+    summary { cursor: pointer; color: var(--accent); font-weight: 650; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Claude Code Usage Insights</h1>
+      <p class="lede">A local, read-only report generated from Claude Code usage history. It includes model/settings recommendations, workflow diagnostics, and launch profiles.</p>
+      <p class="meta">Generated: ${h(generatedAt)} | Claude dir: <code>${h(report.claude_dir)}</code> | Window: ${report.window_days <= 0 ? "all history" : `${h(String(report.window_days))} days`}</p>
+      <div class="grid">
+        ${metric("Sessions", jsonl.session_count)}
+        ${metric("Assistant calls", compactNumber(jsonl.assistant_calls))}
+        ${metric("Records", compactNumber(jsonl.records_in_window))}
+        ${metric("Tool errors", compactNumber((jsonl.top_tool_errors || []).reduce((sum, item) => sum + item.count, 0)))}
+        ${metric("Allow rules", settings.permissions_allow_count)}
+        ${metric("Hooks", settings.hooks_command_count)}
+      </div>
+    </header>
+
+    <section>
+      <h2>Current Settings</h2>
+      <div class="grid">
+        ${metric("Model", settings.model || "default")}
+        ${metric("Effort", settings.effortLevel || "not set")}
+        ${metric("Permission mode", settings.permissions_defaultMode || "not set")}
+        ${metric("Auto mode", settings.autoMode_configured ? "configured" : "missing")}
+        ${metric("Sandbox", settings.sandbox_configured ? "configured" : "missing")}
+        ${metric("Prompt cache 1h", settings.has_prompt_cache_1h ? "enabled" : "disabled")}
+        ${metric("Env scrub", settings.has_subprocess_env_scrub ? "enabled" : "disabled")}
+        ${metric("Global CLAUDE.md", report.local_state.claude_md.exists ? `${report.local_state.claude_md.lines} lines` : "missing")}
+      </div>
+    </section>
+
+    <section>
+      <h2>Additional Investigations</h2>
+      ${cards(insights)}
+    </section>
+
+    <section>
+      <h2>Recommendations</h2>
+      ${cards(recommendations)}
+    </section>
+
+    <section>
+      <h2>Launch Profiles</h2>
+      <div class="cards">
+        ${(report.launch_profiles || []).map((profile) => `
+          <article class="card">
+            <h3>${h(profile.name)}</h3>
+            <p class="muted">${h(profile.use_when)}</p>
+            <code class="command">${h(profile.command)}</code>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+
+    <section>
+      <h2>Model Usage</h2>
+      <table>
+        <thead><tr><th>Model</th><th>Fresh tokens</th><th>Share</th><th>Cache read</th><th>Output</th></tr></thead>
+        <tbody>
+          ${usageEntries.map(([model, values]) => `
+            <tr>
+              <td><code>${h(model)}</code></td>
+              <td>${h(compactNumber(freshTotal(values)))}</td>
+              <td>${h(pct(freshTotal(values), totalFresh))}</td>
+              <td>${h(compactNumber(values.cache_read_input_tokens || 0))}</td>
+              <td>${h(compactNumber(values.output_tokens || 0))}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Usage Patterns</h2>
+      <div class="split">
+        ${listTable("Top tools", jsonl.top_tools)}
+        ${listTable("Top tool errors", jsonl.top_tool_errors)}
+        ${listTable("Top Bash commands", jsonl.top_bash_commands)}
+        ${listTable("Top MCP servers", jsonl.top_mcp_servers)}
+        ${listTable("Top skills", jsonl.top_skills)}
+        ${objectTable("Permission modes", jsonl.permission_modes)}
+      </div>
+      <details>
+        <summary>Bash risk hits</summary>
+        <pre>${h(JSON.stringify(jsonl.bash_risks, null, 2))}</pre>
+      </details>
+      <details>
+        <summary>Risky allow examples</summary>
+        <pre>${h(JSON.stringify(settings.risky_allow_examples, null, 2))}</pre>
+      </details>
+    </section>
+
+    <section>
+      <h2>Settings Snippets</h2>
+      <details open>
+        <summary>Balanced baseline</summary>
+        <pre>${h(JSON.stringify(report.settings_snippets.balanced_user_settings, null, 2))}</pre>
+      </details>
+      <details>
+        <summary>Auto mode overlay</summary>
+        <pre>${h(JSON.stringify(report.settings_snippets.auto_mode_overlay, null, 2))}</pre>
+      </details>
+      <details>
+        <summary>Subagent overlay</summary>
+        <pre>${h(JSON.stringify(report.settings_snippets.subagent_overlay, null, 2))}</pre>
+      </details>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function metric(label, value) {
+  return `<div class="metric"><span class="label">${h(label)}</span><span class="value">${h(String(value))}</span></div>`;
+}
+
+function cards(items) {
+  if (!items || !items.length) return `<p class="muted">No items.</p>`;
+  return `<div class="cards">${items.map((item) => `
+    <article class="card">
+      <h3><span class="badge ${h(item.priority)}">${h(item.priority)}</span>${h(item.category)}: ${h(item.title)}</h3>
+      <p><strong>Evidence:</strong> ${h(item.evidence)}</p>
+      <p><strong>Action:</strong> ${h(item.action)}</p>
+    </article>
+  `).join("")}</div>`;
+}
+
+function listTable(title, rows) {
+  return `<div><h3>${h(title)}</h3><table><tbody>${(rows || []).map((row) => `<tr><td><code>${h(row.name)}</code></td><td>${h(String(row.count))}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+function objectTable(title, values) {
+  return `<div><h3>${h(title)}</h3><table><tbody>${Object.entries(values || {}).map(([name, count]) => `<tr><td><code>${h(name)}</code></td><td>${h(String(count))}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+function h(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function familyTokenTotals(modelUsage) {
   const totals = {};
   for (const [model, values] of Object.entries(modelUsage || {})) {
@@ -1164,10 +1461,15 @@ async function main() {
       return 0;
     }
     const report = await makeReport(args);
+    if (args.htmlPath) {
+      fs.mkdirSync(path.dirname(args.htmlPath), { recursive: true });
+      fs.writeFileSync(args.htmlPath, renderHtmlReport(report), "utf8");
+    }
     if (args.json) {
       console.log(JSON.stringify(report, null, 2));
     } else {
       console.log(printTextReport(report, { snippets: args.snippets }));
+      if (args.htmlPath) console.log(`\nHTML report written to ${args.htmlPath}`);
     }
     return 0;
   } catch (error) {
@@ -1195,6 +1497,7 @@ module.exports = {
   parseArgs,
   permissionRisks,
   printTextReport,
+  renderHtmlReport,
   shellCommandKey,
   splitShellish,
   statsCacheModelUsage,

@@ -51,6 +51,7 @@ node bin/claude-code-usage-advisor.js
 cc-advisor
 cc-advisor --days 7
 cc-advisor --json
+cc-advisor --html reports/claude-code-insights.html
 cc-advisor --no-snippets
 cc-advisor --claude-dir ~/.claude
 cc-advisor --max-files 100
@@ -69,6 +70,7 @@ Options:
 --days <n>            Analyze JSONL records from the last n days (default: 30, 0 = all)
 --max-files <n>       Cap scanned JSONL files, newest first (default: unlimited)
 --json                Print machine-readable JSON
+--html <path>         Write a self-contained HTML report
 --no-snippets         Hide settings snippets in text output
 --help                Show help
 ```
