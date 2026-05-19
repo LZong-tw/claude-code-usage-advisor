@@ -31,4 +31,5 @@ test("builds a report from fixture data", async () => {
   assert.equal(report.jsonl.top_tools[0].name, "Bash");
   assert.ok(report.recommendations.some((rec) => rec.category === "model"));
   assert.ok(report.recommendations.some((rec) => rec.title.includes("autoMode.environment")));
+  assert.ok(report.additional_insights.some((insight) => insight.category === "workflow-friction"));
 });

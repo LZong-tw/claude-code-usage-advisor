@@ -428,6 +428,7 @@ function splitShellish(input) {
 function analyzeSettings(settings) {
   const permissions = objectOrEmpty(settings.permissions);
   const env = objectOrEmpty(settings.env);
+  const hooks = objectOrEmpty(settings.hooks);
   const allowRules = Array.isArray(permissions.allow) ? permissions.allow : [];
   const askRules = Array.isArray(permissions.ask) ? permissions.ask : [];
   const denyRules = Array.isArray(permissions.deny) ? permissions.deny : [];
@@ -461,6 +462,9 @@ function analyzeSettings(settings) {
     has_subprocess_env_scrub: env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB === "1" || env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB === 1,
     autocompact_pct: env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ?? null,
     statusLine: isPlainObject(settings.statusLine) ? settings.statusLine : null,
+    statusline_uses_npx_latest: statusLineUsesNpxLatest(settings.statusLine),
+    hooks_command_count: countHookCommands(hooks),
+    hooks_matchers: summarizeHookMatchers(hooks),
   };
 }
 
@@ -470,6 +474,41 @@ function objectOrEmpty(value) {
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function statusLineUsesNpxLatest(statusLine) {
+  if (!isPlainObject(statusLine) || typeof statusLine.command !== "string") return false;
+  return /\bnpx\b.*(@latest|-y)/.test(statusLine.command);
+}
+
+function countHookCommands(hooks) {
+  let count = 0;
+  for (const entries of Object.values(hooks)) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!isPlainObject(entry) || !Array.isArray(entry.hooks)) continue;
+      count += entry.hooks.filter((hook) => isPlainObject(hook) && typeof hook.command === "string").length;
+    }
+  }
+  return count;
+}
+
+function summarizeHookMatchers(hooks) {
+  const summary = [];
+  for (const [event, entries] of Object.entries(hooks)) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!isPlainObject(entry)) continue;
+      summary.push({
+        event,
+        matcher: typeof entry.matcher === "string" ? entry.matcher : "*",
+        commands: Array.isArray(entry.hooks)
+          ? entry.hooks.filter((hook) => isPlainObject(hook) && typeof hook.command === "string").length
+          : 0,
+      });
+    }
+  }
+  return summary;
 }
 
 function buildRecommendations(settingsInfo, jsonlStats, lifetimeUsage) {
@@ -601,6 +640,150 @@ function buildRecommendations(settingsInfo, jsonlStats, lifetimeUsage) {
   return recommendations;
 }
 
+function buildAdditionalInsights(settingsInfo, jsonlStats, lifetimeUsage, localState) {
+  const insights = [];
+  const toolCalls = mapValueSum(jsonlStats.tool_use);
+  const toolErrors = mapValueSum(jsonlStats.tool_errors);
+  const bashCalls = jsonlStats.tool_use.get("Bash") || 0;
+  const bashErrors = jsonlStats.tool_errors.get("Bash") || 0;
+  const editCalls = jsonlStats.tool_use.get("Edit") || 0;
+  const editErrors = jsonlStats.tool_errors.get("Edit") || 0;
+  const webFetchCalls = jsonlStats.tool_use.get("WebFetch") || 0;
+  const webFetchErrors = jsonlStats.tool_errors.get("WebFetch") || 0;
+
+  if (toolCalls && toolErrors / toolCalls > 0.03) {
+    const highErrorTools = [
+      ["Bash", bashErrors, bashCalls],
+      ["Edit", editErrors, editCalls],
+      ["WebFetch", webFetchErrors, webFetchCalls],
+    ]
+      .filter(([, errors, calls]) => errors > 0 && calls > 0)
+      .map(([name, errors, calls]) => `${name} ${pct(errors, calls)} (${errors}/${calls})`)
+      .join(", ");
+    insights.push({
+      priority: "high",
+      category: "workflow-friction",
+      title: "Investigate tool error hot spots",
+      evidence: `Tool error rate is ${pct(toolErrors, toolCalls)} (${toolErrors}/${toolCalls}). ${highErrorTools || "Top tool errors are present."}`,
+      action: "Look at failed Bash/Edit/WebFetch patterns first. Repeated tool errors usually mean missing project scripts, stale permissions, brittle hooks, or prompts that ask Claude to guess commands instead of inspecting repo affordances.",
+    });
+  }
+
+  const hookEstimate = estimateHookTriggers(settingsInfo, jsonlStats);
+  if (hookEstimate.total > 1000 || settingsInfo.statusline_uses_npx_latest) {
+    const statusLineNote = settingsInfo.statusline_uses_npx_latest
+      ? " Status line uses `npx`/`@latest`, which can add latency or network/cache noise."
+      : "";
+    insights.push({
+      priority: "medium",
+      category: "local-overhead",
+      title: "Measure hook and status line overhead",
+      evidence: `Configured hooks: ${settingsInfo.hooks_command_count}; estimated recent hook invocations: ${compactNumber(hookEstimate.total)}.${statusLineNote}`,
+      action: "Time each hook, cache expensive checks, and consider replacing `npx ...@latest` status lines with a pinned/local command. Hooks are useful, but high-frequency Bash/Edit hooks become part of every coding loop.",
+    });
+  }
+
+  const cwdTotal = [...jsonlStats.cwd.values()].reduce((sum, count) => sum + count, 0);
+  const topCwd = topCounter(jsonlStats.cwd, 1)[0];
+  if (topCwd && cwdTotal && topCwd.count / cwdTotal > 0.35) {
+    insights.push({
+      priority: "medium",
+      category: "project-hotspot",
+      title: "Create project-specific Claude Code profiles",
+      evidence: `Top working directory accounts for ${pct(topCwd.count, cwdTotal)} of recent records: ${topCwd.name}.`,
+      action: "Move repo-specific gotchas, common commands, deny rules, and MCP expectations into project-level `CLAUDE.md`/settings instead of global settings. Heavy projects deserve their own launch alias and permission profile.",
+    });
+  }
+
+  const lowRisky = Object.entries(settingsInfo.risky_allow || {})
+    .filter(([key]) => key.startsWith("low:"))
+    .reduce((sum, [, count]) => sum + count, 0);
+  if (settingsInfo.permissions_allow_count > 100 || lowRisky > 20) {
+    insights.push({
+      priority: "medium",
+      category: "permission-hygiene",
+      title: "Prune allowlist drift",
+      evidence: `Global allow rules: ${settingsInfo.permissions_allow_count}; low-signal one-off rules detected: ${lowRisky}.`,
+      action: "Delete UUID/EOF/done one-off allows and move project-specific or temporary permissions out of global settings. A large allowlist makes `auto` less predictable and harder to audit.",
+    });
+  }
+
+  const claudeMd = localState.claude_md || {};
+  if (claudeMd.exists && claudeMd.lines > 300) {
+    insights.push({
+      priority: "medium",
+      category: "context-hygiene",
+      title: "Review global CLAUDE.md size",
+      evidence: `Global CLAUDE.md is ${claudeMd.lines} lines (${compactNumber(claudeMd.bytes)}B).`,
+      action: "Keep only durable global rules there. Move project/team workflows into project `CLAUDE.md`, skills, or slash commands so every session does not inherit stale context.",
+    });
+  }
+
+  const cacheCreation = Object.values(lifetimeUsage).reduce((sum, values) => sum + (values.cache_creation_input_tokens || 0), 0);
+  const cacheRead = Object.values(lifetimeUsage).reduce((sum, values) => sum + (values.cache_read_input_tokens || 0), 0);
+  if (cacheCreation > 0 && cacheRead / cacheCreation > 8) {
+    insights.push({
+      priority: "low",
+      category: "cache-efficiency",
+      title: "Prompt caching is a major part of your economics",
+      evidence: `Cache read/create ratio is ${(cacheRead / cacheCreation).toFixed(1)}x (${compactNumber(cacheRead)} read vs ${compactNumber(cacheCreation)} create).`,
+      action: "Avoid switching models mid-session when the context is large. Start large-context work in the right profile, keep 1h caching enabled, and reduce global prompt churn.",
+    });
+  }
+
+  const mcpCalls = [...jsonlStats.tool_use.entries()]
+    .filter(([name]) => name.startsWith("mcp__"))
+    .reduce((sum, [, count]) => sum + count, 0);
+  if (mcpCalls > 100) {
+    const topMcp = topCounter(jsonlStats.mcp_servers, 3).map((item) => `${item.name} ${item.count}`).join(", ");
+    insights.push({
+      priority: "medium",
+      category: "mcp-dependency",
+      title: "Treat MCP-heavy work as a separate operating mode",
+      evidence: `MCP tool calls in window: ${mcpCalls}. Top servers: ${topMcp}.`,
+      action: "Use a planning-first profile for incident/Jira/PagerDuty/Sentry work, keep MCP auth health visible, and avoid mixing high-risk infrastructure actions into the same always-auto allowlist.",
+    });
+  }
+
+  if (localState.telemetry_failed_events_count > 20 || jsonlStats.parse_errors > 0) {
+    insights.push({
+      priority: "low",
+      category: "local-health",
+      title: "Inspect local telemetry/log health",
+      evidence: `Failed telemetry event files: ${localState.telemetry_failed_events_count}; JSONL parse errors: ${jsonlStats.parse_errors}.`,
+      action: "This usually does not affect model choice directly, but it can indicate stale local state, broken telemetry upload, or partially written JSONL. Keep it visible when debugging CLI/report discrepancies.",
+    });
+  }
+
+  const records = jsonlStats.records_in_window || 0;
+  if (records && jsonlStats.sidechain_records / records > 0.05) {
+    insights.push({
+      priority: "medium",
+      category: "delegation",
+      title: "Audit subagent return on investment",
+      evidence: `Sidechain/subagent records are ${pct(jsonlStats.sidechain_records, records)} of recent records.`,
+      action: "Track whether subagents reduce wall-clock time or simply multiply context/tool usage. Use cheaper subagent models for exploration and reserve Opus for synthesis decisions.",
+    });
+  }
+
+  return insights;
+}
+
+function estimateHookTriggers(settingsInfo, jsonlStats) {
+  const bash = jsonlStats.tool_use.get("Bash") || 0;
+  const edit = jsonlStats.tool_use.get("Edit") || 0;
+  const write = jsonlStats.tool_use.get("Write") || 0;
+  const stop = jsonlStats.sessions ? jsonlStats.sessions.size : 0;
+  let total = 0;
+  for (const hook of settingsInfo.hooks_matchers || []) {
+    if (!hook.commands) continue;
+    if (hook.matcher === "*" && hook.event === "Stop") total += hook.commands * stop;
+    else if (/Bash/.test(hook.matcher)) total += hook.commands * bash;
+    else if (/Edit|Write/.test(hook.matcher)) total += hook.commands * (edit + write);
+  }
+  return { total };
+}
+
 function launchProfiles() {
   return [
     {
@@ -699,16 +882,69 @@ function settingsSnippets() {
   };
 }
 
+function analyzeLocalState(claudeDir) {
+  return {
+    claude_md: fileLineStats(path.join(claudeDir, "CLAUDE.md")),
+    settings_local: summarizeSettingsFile(path.join(claudeDir, "settings.local.json")),
+    telemetry_failed_events_count: countFiles(path.join(claudeDir, "telemetry"), (name) => name.startsWith("1p_failed_events") && name.endsWith(".json")),
+  };
+}
+
+function summarizeSettingsFile(filePath) {
+  const settings = readJson(filePath);
+  const permissions = objectOrEmpty(settings.permissions);
+  return {
+    exists: fs.existsSync(filePath),
+    permissions_allow_count: Array.isArray(permissions.allow) ? permissions.allow.length : 0,
+    permissions_ask_count: Array.isArray(permissions.ask) ? permissions.ask.length : 0,
+    permissions_deny_count: Array.isArray(permissions.deny) ? permissions.deny.length : 0,
+  };
+}
+
+function fileLineStats(filePath) {
+  try {
+    const content = fs.readFileSync(filePath, "utf8");
+    return {
+      exists: true,
+      bytes: Buffer.byteLength(content, "utf8"),
+      lines: content.length ? content.split(/\r?\n/).length : 0,
+    };
+  } catch {
+    return { exists: false, bytes: 0, lines: 0 };
+  }
+}
+
+function countFiles(root, predicate) {
+  let count = 0;
+  function visit(dir) {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(fullPath);
+      else if (entry.isFile() && predicate(entry.name, fullPath)) count += 1;
+    }
+  }
+  visit(root);
+  return count;
+}
+
 async function makeReport(options) {
   const settings = readJson(path.join(options.claudeDir, "settings.json"));
   const statsCache = readJson(path.join(options.claudeDir, "stats-cache.json"));
   const settingsInfo = analyzeSettings(settings);
   const lifetimeUsage = statsCacheModelUsage(statsCache);
   const jsonlStats = await analyzeJsonl(options.claudeDir, options.days, options.maxFiles);
+  const localState = analyzeLocalState(options.claudeDir);
   return {
     claude_dir: options.claudeDir,
     window_days: options.days,
     settings: settingsInfo,
+    local_state: localState,
     stats_cache: {
       version: statsCache.version ?? null,
       totalSessions: statsCache.totalSessions ?? null,
@@ -718,6 +954,7 @@ async function makeReport(options) {
     },
     jsonl: summarizeJsonlStats(jsonlStats),
     recommendations: buildRecommendations(settingsInfo, jsonlStats, lifetimeUsage),
+    additional_insights: buildAdditionalInsights(settingsInfo, jsonlStats, lifetimeUsage, localState),
     launch_profiles: launchProfiles(),
     settings_snippets: settingsSnippets(),
   };
@@ -756,6 +993,7 @@ function printTextReport(report, options = {}) {
   const includeSnippets = options.snippets !== false;
   const lines = [];
   const push = (line = "") => lines.push(line);
+  const priorityOrder = { high: 0, medium: 1, low: 2 };
   push("Claude Code Usage Advisor");
   push("=========================");
   push(`Claude dir: ${report.claude_dir}`);
@@ -805,6 +1043,18 @@ function printTextReport(report, options = {}) {
   if (Object.keys(jsonl.bash_risks).length) push(`bash risk hits: ${JSON.stringify(jsonl.bash_risks)}`);
   push();
 
+  if (report.additional_insights && report.additional_insights.length) {
+    push("Additional investigations");
+    push("-------------------------");
+    const insights = [...report.additional_insights].sort((a, b) => (priorityOrder[a.priority] ?? 9) - (priorityOrder[b.priority] ?? 9));
+    for (const insight of insights) {
+      push(`[${insight.priority}] ${insight.category}: ${insight.title}`);
+      push(`  evidence: ${insight.evidence}`);
+      push(`  action: ${insight.action}`);
+    }
+    push();
+  }
+
   push("Recommended launch profiles");
   push("---------------------------");
   for (const profile of report.launch_profiles) {
@@ -815,7 +1065,6 @@ function printTextReport(report, options = {}) {
 
   push("Recommendations");
   push("---------------");
-  const priorityOrder = { high: 0, medium: 1, low: 2 };
   const recs = [...report.recommendations].sort((a, b) => (priorityOrder[a.priority] ?? 9) - (priorityOrder[b.priority] ?? 9));
   for (const rec of recs) {
     push(`[${rec.priority}] ${rec.category}: ${rec.title}`);

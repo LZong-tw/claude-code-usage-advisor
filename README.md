@@ -43,6 +43,7 @@ node bin/claude-code-usage-advisor.js
 - Are risky allow rules accumulating in `settings.json`?
 - Should you configure `autoMode.environment`, sandboxing, prompt caching, or subprocess env scrubbing?
 - Which launch profiles should you use for planning, implementation, autonomous work, and cheap triage?
+- Where are tool errors, hooks, status lines, project hotspots, MCP calls, or global context creating friction?
 
 ## Usage
 
@@ -86,6 +87,8 @@ Recommended launch profiles
 ```
 
 The text report also includes evidence-backed recommendations and settings snippets. The JSON report includes the same data for dashboards or automation.
+
+The `Additional investigations` section flags workflow and local-environment issues such as high tool error rates, hook/status-line overhead, allowlist drift, oversized global `CLAUDE.md`, MCP-heavy sessions, and subagent usage patterns.
 
 ## Data Sources
 
