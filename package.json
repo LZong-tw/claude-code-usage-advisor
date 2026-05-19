@@ -31,10 +31,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/USER/claude-code-usage-advisor.git"
+    "url": "git+https://github.com/LZong-tw/claude-code-usage-advisor.git"
   },
   "bugs": {
-    "url": "https://github.com/USER/claude-code-usage-advisor/issues"
+    "url": "https://github.com/LZong-tw/claude-code-usage-advisor/issues"
   },
-  "homepage": "https://github.com/USER/claude-code-usage-advisor#readme"
+  "homepage": "https://github.com/LZong-tw/claude-code-usage-advisor#readme"
 }

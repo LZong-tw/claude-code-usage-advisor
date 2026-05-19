@@ -22,7 +22,7 @@ cc-advisor
 From a clone:
 
 ```bash
-git clone https://github.com/USER/claude-code-usage-advisor.git
+git clone https://github.com/LZong-tw/claude-code-usage-advisor.git
 cd claude-code-usage-advisor
 npm test
 node bin/claude-code-usage-advisor.js
@@ -127,10 +127,9 @@ No build step is required.
 
 Before publishing:
 
-1. Replace `USER` in `package.json` and this README with the GitHub owner.
-2. Create a public GitHub repo.
-3. Push the repository.
-4. Run `npm publish --access public`.
+1. Create a public GitHub repo.
+2. Push the repository.
+3. Run `npm publish --access public`.
 
 ## License
 
