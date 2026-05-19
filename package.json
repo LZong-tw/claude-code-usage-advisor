@@ -1,0 +1,40 @@
+{
+  "name": "claude-code-usage-advisor",
+  "version": "0.1.0",
+  "description": "Out-of-the-box Claude Code usage analyzer that recommends model and settings profiles.",
+  "type": "commonjs",
+  "bin": {
+    "claude-code-usage-advisor": "bin/claude-code-usage-advisor.js",
+    "cc-advisor": "bin/claude-code-usage-advisor.js"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "smoke": "node bin/claude-code-usage-advisor.js --help && node bin/claude-code-usage-advisor.js --claude-dir test/fixtures/sample-claude --days 0"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "usage",
+    "advisor",
+    "model-routing",
+    "settings"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/USER/claude-code-usage-advisor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/USER/claude-code-usage-advisor/issues"
+  },
+  "homepage": "https://github.com/USER/claude-code-usage-advisor#readme"
+}

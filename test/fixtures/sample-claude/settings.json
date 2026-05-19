@@ -1,0 +1,15 @@
+{
+  "effortLevel": "xhigh",
+  "permissions": {
+    "defaultMode": "auto",
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(op item:*)",
+      "Bash(kubectl apply *)",
+      "Bash(curl:*)"
+    ]
+  },
+  "env": {
+    "ENABLE_PROMPT_CACHING_1H": 0
+  }
+}
