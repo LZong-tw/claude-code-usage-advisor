@@ -9,7 +9,7 @@ Claude Code Usage Advisor is a zero-dependency CLI that reads your local Claude 
 It answers practical questions:
 
 - Should daily coding use Sonnet or Opus?
-- When should I use `opusplan`, `opus[1m]`, Haiku, or fast mode?
+- When should I use Sonnet, Opus plan mode, Haiku, or fast mode?
 - Is my global `effortLevel` too high?
 - Is `permissions.defaultMode=auto` actually safe in my setup?
 - Which allow rules should move to ask/deny?
@@ -26,7 +26,7 @@ Repo: https://github.com/LZong-tw/claude-code-usage-advisor
 
 I built a small CLI for Claude Code users:
 
-Claude Code Usage Advisor reads your local `~/.claude` history and recommends model/settings profiles: Sonnet vs Opus, `opusplan`, `opus[1m]`, Haiku, effort level, permission mode, sandboxing, and prompt caching.
+Claude Code Usage Advisor reads your local `~/.claude` history and recommends model/settings profiles: Sonnet vs Opus plan mode, Haiku, effort level, permission mode, sandboxing, and prompt caching.
 
 Read-only. Zero dependencies. No telemetry.
 
@@ -73,7 +73,7 @@ Body:
 ```text
 I built a small zero-dependency CLI that reads local Claude Code history and recommends model/settings profiles.
 
-It looks at ~/.claude/settings.json, stats-cache.json, and projects/**/*.jsonl, then suggests when to use Sonnet, opusplan, opus[1m], Haiku, effort levels, permission modes, sandboxing, prompt caching, and which allow rules may be risky.
+It looks at ~/.claude/settings.json, stats-cache.json, and projects/**/*.jsonl, then suggests when to use Sonnet, Opus plan mode, Haiku, effort levels, permission modes, sandboxing, prompt caching, and which allow rules may be risky.
 
 It is read-only and does not make network calls.
 

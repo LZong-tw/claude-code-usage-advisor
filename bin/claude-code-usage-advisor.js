@@ -534,7 +534,7 @@ function buildRecommendations(settingsInfo, jsonlStats, lifetimeUsage) {
       category: "model",
       title: "Make Sonnet the execution default and reserve Opus for planning",
       evidence: `Opus is ${pct(opusFresh, totalFresh)} of non-cache tokens while recent sessions are tool-heavy (${toolPerCall.toFixed(2)} tool calls/assistant call).`,
-      action: "Use `claude --model opusplan --permission-mode plan` for ambiguous work, then let execution run on Sonnet. Use `claude --model sonnet` for normal implementation.",
+      action: "Use `claude --model opus --permission-mode plan --effort xhigh` for ambiguous work, then let execution run on Sonnet. Use `claude --model sonnet --permission-mode acceptEdits --effort medium` for normal implementation.",
     });
   } else if (totalFresh && sonnetFresh / totalFresh > 0.55) {
     recommendations.push({
@@ -542,7 +542,7 @@ function buildRecommendations(settingsInfo, jsonlStats, lifetimeUsage) {
       category: "model",
       title: "Keep Sonnet as the default daily coding model",
       evidence: `Sonnet is ${pct(sonnetFresh, totalFresh)} of non-cache tokens.`,
-      action: "Use `claude --model sonnet` for implementation; escalate to `opusplan` for architecture, incident diagnosis, and high-ambiguity refactors.",
+      action: "Use `claude --model sonnet --permission-mode acceptEdits --effort medium` for implementation; escalate to `claude --model opus --permission-mode plan --effort xhigh` for architecture, incident diagnosis, and high-ambiguity refactors.",
     });
   } else {
     recommendations.push({
@@ -550,7 +550,7 @@ function buildRecommendations(settingsInfo, jsonlStats, lifetimeUsage) {
       category: "model",
       title: "Use task routing instead of one global model",
       evidence: "Your history mixes model families enough that one permanent model is less useful than launch profiles.",
-      action: "Use Sonnet for implementation, `opusplan` for deep planning, Haiku for simple summaries/classification, and Opus 1M only for large-context planning.",
+      action: "Use Sonnet for implementation, Opus in plan mode for deep planning, Haiku for simple summaries/classification, and the largest Opus context your account exposes only for large-context planning.",
     });
   }
 
@@ -560,7 +560,7 @@ function buildRecommendations(settingsInfo, jsonlStats, lifetimeUsage) {
       category: "effort",
       title: "Do not keep high effort as a global default",
       evidence: `Current user setting has \`effortLevel: ${settingsInfo.effortLevel}\`.`,
-      action: "Set global `effortLevel` to `auto` or `medium`; use `/effort high` or `/effort xhigh` only for design, review, migrations, and production-risk decisions.",
+      action: "Set global `effortLevel` to `medium`; use `--effort high` or `--effort xhigh` only for design, review, migrations, and production-risk decisions.",
     });
   }
 
@@ -617,7 +617,7 @@ function buildRecommendations(settingsInfo, jsonlStats, lifetimeUsage) {
       title: settingsInfo.has_prompt_cache_1h ? "Keep 1-hour prompt caching enabled" : "Enable 1-hour prompt caching for repeated large contexts",
       evidence: `Lifetime cache creation/read tokens are high (${compactNumber(cacheCreation)} create, ${compactNumber(cacheRead)} read).`,
       action: settingsInfo.has_prompt_cache_1h
-        ? "Keep `ENABLE_PROMPT_CACHING_1H=1`; for very large repo planning, start directly with `opus[1m]` instead of switching models mid-session."
+        ? "Keep `ENABLE_PROMPT_CACHING_1H=1`; for very large repo planning, start directly in an Opus planning profile instead of switching models mid-session."
         : "Add `\"ENABLE_PROMPT_CACHING_1H\": \"1\"` under `env` if your billing/plan supports it.",
     });
   }
@@ -795,27 +795,27 @@ function launchProfiles() {
   return [
     {
       name: "Daily implementation",
-      command: "claude --model sonnet --permission-mode acceptEdits",
+      command: "claude --model sonnet --permission-mode acceptEdits --effort medium",
       use_when: "Normal code edits, tests, refactors with a clear target.",
     },
     {
       name: "Deep planning then execution",
-      command: "claude --model opusplan --permission-mode plan",
+      command: "claude --model opus --permission-mode plan --effort xhigh",
       use_when: "Ambiguous architecture, incident diagnosis, large refactors, migrations.",
     },
     {
       name: "Trusted autonomous work",
-      command: "claude --model sonnet --permission-mode auto",
+      command: "claude --model sonnet --permission-mode auto --effort high",
       use_when: "Only after `autoMode.environment`, risky permissions, and sandboxing are configured.",
     },
     {
       name: "Large-context planning",
-      command: "claude --model opus[1m] --permission-mode plan",
-      use_when: "Large repo exploration or cross-service analysis. Prefer Opus 1M when your plan includes it; avoid Sonnet 1M unless extra usage is acceptable.",
+      command: "claude --model opus --permission-mode plan --effort xhigh --add-dir <extra-dir>",
+      use_when: "Large repo exploration or cross-service analysis. Use the largest Opus context your Claude Code account exposes; pass a full model id only if your CLI/account supports it.",
     },
     {
       name: "Cheap/simple triage",
-      command: "claude --model haiku --permission-mode default",
+      command: "claude --model haiku --permission-mode default --effort low",
       use_when: "Summaries, classification, log triage, simple Q&A without code changes.",
     },
   ];
@@ -825,8 +825,8 @@ function settingsSnippets() {
   return {
     balanced_user_settings: {
       $schema: "https://json.schemastore.org/claude-code-settings.json",
-      model: "opusplan",
-      effortLevel: "auto",
+      model: "sonnet",
+      effortLevel: "medium",
       permissions: {
         defaultMode: "acceptEdits",
         ask: [

@@ -53,8 +53,8 @@ Keep fixtures small and synthetic. Do not commit real user transcripts, secrets,
 The advisor should stay conservative and evidence-backed:
 
 - Prefer Sonnet for daily implementation.
-- Prefer `opusplan` for ambiguous planning, architecture, migrations, and high-stakes debugging.
-- Prefer `opus[1m]` only for large-context planning when the account supports it.
+- Prefer `opus` with `--permission-mode plan` for ambiguous planning, architecture, migrations, and high-stakes debugging.
+- Prefer large-context Opus variants only when the account and Claude Code CLI expose a supported full model id.
 - Prefer Haiku for simple summaries, classification, and cheap triage.
 - Treat fast mode as explicit session-level behavior, not a global default.
 - For permissions, distinguish read-only cloud/cluster access from mutation/destructive actions.

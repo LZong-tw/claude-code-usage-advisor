@@ -6,7 +6,7 @@
 
 Stop guessing which Claude Code model and settings to use.
 
-Claude Code Usage Advisor analyzes your local Claude Code history and recommends practical launch profiles for `sonnet`, `opusplan`, `opus[1m]`, `haiku`, effort level, permission mode, sandboxing, and prompt caching.
+Claude Code Usage Advisor analyzes your local Claude Code history and recommends practical launch profiles for Sonnet, Opus plan mode, Haiku, effort level, permission mode, sandboxing, and prompt caching.
 
 It is read-only, zero-dependency, and runs locally against `~/.claude`.
 
@@ -37,7 +37,7 @@ node bin/claude-code-usage-advisor.js
 ## What It Answers
 
 - Which model should be your default for daily Claude Code work?
-- When should you use `sonnet`, `opusplan`, `opus[1m]`, `haiku`, or fast mode?
+- When should you use Sonnet, Opus plan mode, Haiku, or fast mode?
 - Should `effortLevel` be global or task-specific?
 - Is `permissions.defaultMode` appropriate for your actual usage?
 - Are risky allow rules accumulating in `settings.json`?
@@ -80,11 +80,11 @@ Options:
 ```text
 Recommended launch profiles
 ---------------------------
-- Daily implementation: `claude --model sonnet --permission-mode acceptEdits`
+- Daily implementation: `claude --model sonnet --permission-mode acceptEdits --effort medium`
   Normal code edits, tests, refactors with a clear target.
-- Deep planning then execution: `claude --model opusplan --permission-mode plan`
+- Deep planning then execution: `claude --model opus --permission-mode plan --effort xhigh`
   Ambiguous architecture, incident diagnosis, large refactors, migrations.
-- Trusted autonomous work: `claude --model sonnet --permission-mode auto`
+- Trusted autonomous work: `claude --model sonnet --permission-mode auto --effort high`
   Only after `autoMode.environment`, risky permissions, and sandboxing are configured.
 ```
 
@@ -114,8 +114,8 @@ The advisor combines:
 Core routing policy:
 
 - `sonnet`: daily implementation, tests, straightforward refactors
-- `opusplan`: ambiguous planning, architecture, migrations, high-stakes debugging
-- `opus[1m]`: large-context planning when your account supports it
+- `opus` with `--permission-mode plan`: ambiguous planning, architecture, migrations, high-stakes debugging
+- Opus large-context variants: large-context planning when your account and Claude Code CLI expose a supported full model id
 - `haiku`: summaries, classification, cheap triage
 - fast mode: explicit, urgent Opus sessions only, not a global default
 
