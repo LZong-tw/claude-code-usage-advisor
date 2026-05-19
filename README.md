@@ -123,14 +123,6 @@ npm run smoke
 
 No build step is required.
 
-## Publish Checklist
-
-Before publishing:
-
-1. Create a public GitHub repo.
-2. Push the repository.
-3. Run `npm publish --access public`.
-
 ## License
 
 MIT
