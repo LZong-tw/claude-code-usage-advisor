@@ -24,7 +24,7 @@
     "model-routing",
     "settings"
   ],
-  "author": "",
+  "author": "LZong-tw <lzong.tw@gmail.com>",
   "license": "MIT",
   "engines": {
     "node": ">=18"
