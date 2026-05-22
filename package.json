@@ -1,6 +1,6 @@
 {
   "name": "claude-code-usage-advisor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Out-of-the-box Claude Code usage analyzer that recommends model and settings profiles.",
   "type": "commonjs",
   "bin": {
