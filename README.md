@@ -47,23 +47,54 @@ node bin/claude-code-usage-advisor.js
 
 ## Usage
 
+First run, full report against your real `~/.claude`:
+
 ```bash
-cc-advisor
+npx claude-code-usage-advisor
+```
+
+That's the answer for most people. The sections below cover the rest.
+
+### Common scenarios
+
+**Audit only your recent shift in workflow.** Default window is 30 days; narrow when you've changed how you use Claude Code lately and want recommendations based on that, not on history.
+
+```bash
 cc-advisor --days 7
-cc-advisor --json
-cc-advisor --html reports/claude-code-insights.html
-cc-advisor --no-snippets
-cc-advisor --claude-dir ~/.claude
-cc-advisor --max-files 100
 ```
 
-Without installing:
+**Share the report with a teammate or paste into a ticket.** Produces a self-contained HTML file (no external assets) you can open in a browser or upload as an artifact.
 
 ```bash
-npx claude-code-usage-advisor --days 7
+cc-advisor --html reports/claude-code-insights.html
 ```
 
-Options:
+**Feed it into a dashboard or pipeline.** JSON contains the same recommendations, evidence, and investigations as the text report.
+
+```bash
+cc-advisor --json > advisor.json
+jq '.recommendations[] | select(.severity=="high")' advisor.json
+```
+
+**Speed up runs on a huge `~/.claude`.** Scans newest JSONL files first.
+
+```bash
+cc-advisor --days 14 --max-files 200
+```
+
+**Point at a non-default Claude Code directory** (e.g. the macOS app data dir, or a teammate's exported dump):
+
+```bash
+cc-advisor --claude-dir ~/Library/Application\ Support/ClaudeCode
+```
+
+**Skip the settings snippets** when you just want the diagnosis, not the suggested JSON:
+
+```bash
+cc-advisor --no-snippets
+```
+
+### Options
 
 ```text
 --claude-dir <path>   Claude Code directory (default: ~/.claude)
@@ -77,20 +108,41 @@ Options:
 
 ## Example Output
 
+Abridged from a real run. The full report also includes Current settings, Lifetime model usage, Recent usage patterns, Top tools / Bash command families, and (unless `--no-snippets`) ready-to-paste `settings.json` blocks.
+
 ```text
+Additional investigations
+-------------------------
+[high] workflow-friction: Investigate tool error hot spots
+  evidence: Tool error rate is 33.3% (1/3). Bash 50.0% (1/2)
+  action: Look at failed Bash/Edit/WebFetch patterns first. Repeated tool errors
+    usually mean missing project scripts, stale permissions, brittle hooks, or
+    prompts that ask Claude to guess commands instead of inspecting repo affordances.
+
 Recommended launch profiles
 ---------------------------
 - Daily implementation: `claude --model sonnet --permission-mode acceptEdits --effort medium`
-  Normal code edits, tests, refactors with a clear target.
 - Deep planning then execution: `claude --model opus --permission-mode plan --effort xhigh`
-  Ambiguous architecture, incident diagnosis, large refactors, migrations.
 - Trusted autonomous work: `claude --model sonnet --permission-mode auto --effort high`
-  Only after `autoMode.environment`, risky permissions, and sandboxing are configured.
+- Large-context planning: `claude --model opus --permission-mode plan --effort xhigh --add-dir <extra-dir>`
+- Cheap/simple triage: `claude --model haiku --permission-mode default --effort low`
+
+Recommendations
+---------------
+[high] model: Make Sonnet the execution default and reserve Opus for planning
+  evidence: Opus is 99.7% of non-cache tokens while recent sessions are
+    tool-heavy (1.50 tool calls/assistant call).
+  action:   Use `claude --model opus --permission-mode plan --effort xhigh` for
+    ambiguous work, then let execution run on Sonnet.
+
+[high] permissions: Move risky always-allow permissions to ask/deny
+  evidence: Detected 2 critical/high-risk allow rules, including destructive
+    shell, cloud/cluster mutation, secret, or network pipe-to-shell patterns.
+  action:   Keep read-only commands in `allow`; move deploy, destructive, secret,
+    and broad network shell commands to `ask`.
 ```
 
-The text report also includes evidence-backed recommendations and settings snippets. The JSON report includes the same data for dashboards or automation.
-
-The `Additional investigations` section flags workflow and local-environment issues such as high tool error rates, hook/status-line overhead, allowlist drift, oversized global `CLAUDE.md`, MCP-heavy sessions, and subagent usage patterns.
+Every recommendation cites the evidence it's based on, so you can decide whether a heuristic fits your situation before applying the suggested action.
 
 ## Data Sources
 
