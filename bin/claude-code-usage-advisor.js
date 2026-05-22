@@ -70,7 +70,7 @@ Options:
 Examples:
   npx claude-code-usage-advisor
   npx claude-code-usage-advisor --days 7 --json
-  cc-advisor --claude-dir ~/Library/Application\\ Support/ClaudeCode`;
+  cc-advisor --claude-dir ./teammate-claude-dump`;
 }
 
 function parseArgs(argv) {
@@ -822,6 +822,9 @@ function launchProfiles() {
 }
 
 function settingsSnippets() {
+  const systemWritePaths = process.platform === "win32"
+    ? ["C:/Windows", "C:/Program Files"]
+    : ["/etc", "/usr/local/bin"];
   return {
     balanced_user_settings: {
       $schema: "https://json.schemastore.org/claude-code-settings.json",
@@ -859,7 +862,7 @@ function settingsSnippets() {
         autoAllowBashIfSandboxed: true,
         filesystem: {
           denyRead: ["~/.aws", "~/.ssh", "~/.kube", "~/.mcp-auth"],
-          denyWrite: ["/etc", "/usr/local/bin", "~/.ssh", "~/.aws"],
+          denyWrite: [...systemWritePaths, "~/.ssh", "~/.aws"],
         },
       },
     },

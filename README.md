@@ -8,7 +8,7 @@ Stop guessing which Claude Code model and settings to use.
 
 Claude Code Usage Advisor analyzes your local Claude Code history and recommends practical launch profiles for Sonnet, Opus plan mode, Haiku, effort level, permission mode, sandboxing, and prompt caching.
 
-It is read-only, zero-dependency, and runs locally against `~/.claude`.
+It is read-only, zero-dependency, and runs locally against `~/.claude` (the Claude Code CLI default on macOS, Linux, and Windows).
 
 ## Install
 
@@ -82,10 +82,11 @@ jq '.recommendations[] | select(.severity=="high")' advisor.json
 cc-advisor --days 14 --max-files 200
 ```
 
-**Point at a non-default Claude Code directory** (e.g. the macOS app data dir, or a teammate's exported dump):
+**Point at a non-default Claude Code directory** — for example a teammate's exported `~/.claude` snapshot, or a backup directory you're auditing offline:
 
 ```bash
-cc-advisor --claude-dir ~/Library/Application\ Support/ClaudeCode
+cc-advisor --claude-dir ./teammate-claude-dump
+cc-advisor --claude-dir /mnt/backup/2026-05/claude
 ```
 
 **Skip the settings snippets** when you just want the diagnosis, not the suggested JSON:
