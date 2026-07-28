@@ -1,0 +1,8 @@
+{
+  "model": "sonnet",
+  "effortLevel": "medium",
+  "permissions": { "defaultMode": "acceptEdits", "allow": ["Bash(git status:*)"], "ask": [], "deny": ["Read(./.env)"] },
+  "autoMode": { "environment": "container" },
+  "sandbox": { "enabled": true, "denyWrite": ["/etc"] },
+  "env": {}
+}

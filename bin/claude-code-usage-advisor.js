@@ -20,18 +20,29 @@ const STATS_TOKEN_FIELD_MAP = {
   cacheReadInputTokens: "cache_read_input_tokens",
 };
 
+// Matched per shell statement, never across `;`/`&&`/newline: `echo aws && echo credentials` is not a secret read.
+// `aws\b` also matches inside `aws-vault`, so every rule that means the AWS CLI uses AWS_CLI instead.
+const AWS_CLI = String.raw`aws(?![-\w])`;
 const RISKY_COMMAND_PATTERNS = [
-  ["critical", "pipe-to-shell", /(curl|wget)\b.*\|\s*(sudo\s+)?(bash|sh)\b/is],
-  ["critical", "recursive-delete", /\brm\s+(-[^\s]*r[^\s]*f|-rf|-fr)\b/i],
-  ["critical", "force-push", /\bgit\s+push\b.*\s(--force|-f|--force-with-lease)\b/is],
+  ["critical", "pipe-to-shell", /(curl|wget)\b[^\n]*\|\s*(sudo\s+)?(bash|sh)\b/i],
+  ["critical", "recursive-delete", /\brm\s+(-\S*r\S*f|-\S*f\S*r)\b/i],
+  ["critical", "force-push", /\bgit\s+push\b[^\n]*\s(--force(?!-with-lease)|-f)\b/i],
   ["critical", "terraform-destroy", /\bterraform\s+destroy\b/i],
   ["high", "terraform-apply", /\bterraform\s+apply\b/i],
-  ["high", "kubectl-delete", /\bkubectl\b.*\bdelete\b/is],
-  ["high", "cloud-delete", /\baws\b.*\b(delete|remove|terminate)\b/is],
-  ["high", "secret-manager-read", /\b(op|aws|az|gcloud)\b.*\b(secret|keyvault|vault|credentials?)\b/is],
+  ["high", "kubectl-delete", /\bkubectl\b[^\n]*\bdelete\b/i],
+  ["high", "cloud-delete", new RegExp(String.raw`\b${AWS_CLI}\s+\S+[^\n]*\b(delete|terminate)\b|\b${AWS_CLI}\s+s3\s+(rm|rb)\b`, "i")],
+  [
+    "high",
+    "secret-manager-read",
+    new RegExp(
+      String.raw`\b(${AWS_CLI}\s+(secretsmanager|ssm\s+get-parameter)|az\s+keyvault|gcloud\s+secrets|op\s+(item|read|signin)|(?<![-\w])vault\s+(read|kv))\b`,
+      "i"
+    ),
+  ],
   ["high", "sudo", /(^|\s)sudo\s+/i],
-  ["medium", "package-install", /\b(brew|npm|pnpm|yarn|pip|uv|gem|cargo)\b.*\b(install|add)\b/is],
-  ["medium", "network-fetch", /\b(curl|wget|WebFetch)\b/i],
+  ["medium", "force-push-with-lease", /\bgit\s+push\b[^\n]*\s--force-with-lease\b/i],
+  ["medium", "package-install", /\b(brew|npm|pnpm|yarn|pip|uv|gem|cargo)\s+[^\n]*\b(install|add)\b/i],
+  ["medium", "network-fetch", /\b(curl|wget)\b/i],
 ];
 
 const RISKY_PERMISSION_PATTERNS = [
@@ -43,13 +54,18 @@ const RISKY_PERMISSION_PATTERNS = [
     "cloud or cluster mutation",
     /^Bash\((kubectl\b.*\b(apply|delete|patch|scale|rollout|exec|cp|create|edit|replace|annotate|label)\b|(aws|az|gcloud)\b.*\b(delete|remove|terminate|put|update|create|set|write|deploy|apply)\b|terraform\s+(apply|destroy))/i,
   ],
+  ["high", "cloud or cluster mutation", /^Bash\(aws\s+s3\s+(rm|rb|mv|sync\b[^)]*--delete)\b/i],
   ["high", "secret tooling", /^Bash\((op\s+item|op\s+vault|aws\s+secretsmanager|az\s+keyvault)\b/i],
   ["medium", "cloud or cluster access", /^Bash\((kubectl|aws|az|gcloud|terraform)\b/i],
   ["medium", "network fetch", /^Bash\((curl|wget)\b/i],
   ["medium", "package install", /^Bash\((brew|npm|pnpm|yarn|pip|uv|gem|cargo).*install\b/i],
-  ["medium", "git remote mutation", /^Bash\(git\s+(checkout|commit|push|remote)\b/i],
+  ["medium", "git remote mutation", /^Bash\(git\s+(push|remote)\b/i],
+  ["low", "git local mutation", /^Bash\(git\s+(checkout|commit|reset|restore)\b/i],
   ["low", "one-off artifact", /^Bash\(([0-9a-f]{8}-[0-9a-f-]{27,}|EOF|done)\)?$/i],
 ];
+
+const TARGETS_VERSION = "Claude Code 2.1.220 (2026-07)";
+const PRIORITY_ORDER = { high: 0, medium: 1, low: 2 };
 
 function usage() {
   return `Claude Code Usage Advisor
@@ -65,12 +81,18 @@ Options:
   --json                Print machine-readable JSON
   --html <path>         Write a self-contained HTML report
   --no-snippets         Hide settings snippets in text output
+  --fail-on <priority>  Exit 1 when a finding is at least this severe (high|medium|low).
+                        Findings top out at high, so high is the CI gate.
+                        Errors exit 2, so a broken run never looks like a finding.
   --help                Show help
 
 Examples:
   npx claude-code-usage-advisor
   npx claude-code-usage-advisor --days 7 --json
-  cc-advisor --claude-dir ./teammate-claude-dump`;
+  cc-advisor --claude-dir ./teammate-claude-dump
+  cc-advisor --fail-on high --no-snippets
+
+Heuristics target ${TARGETS_VERSION}.`;
 }
 
 function parseArgs(argv) {
@@ -81,6 +103,7 @@ function parseArgs(argv) {
     json: false,
     htmlPath: null,
     snippets: true,
+    failOn: null,
     help: false,
   };
 
@@ -108,6 +131,10 @@ function parseArgs(argv) {
       args.maxFiles = parseNonNegativeInteger(requireValue(argv, ++i, "--max-files"), "--max-files");
     } else if (arg.startsWith("--max-files=")) {
       args.maxFiles = parseNonNegativeInteger(arg.slice("--max-files=".length), "--max-files");
+    } else if (arg === "--fail-on") {
+      args.failOn = parsePriority(requireValue(argv, ++i, "--fail-on"));
+    } else if (arg.startsWith("--fail-on=")) {
+      args.failOn = parsePriority(arg.slice("--fail-on=".length));
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -123,6 +150,21 @@ function requireValue(argv, index, flag) {
     throw new Error(`${flag} requires a value`);
   }
   return argv[index];
+}
+
+function parsePriority(value) {
+  if (!(value in PRIORITY_ORDER)) {
+    throw new Error(`--fail-on must be one of: ${Object.keys(PRIORITY_ORDER).join(", ")}`);
+  }
+  return value;
+}
+
+// Findings are advisory, so a run only fails when the caller opts in with --fail-on.
+function failOnExitCode(report, threshold) {
+  if (!threshold) return 0;
+  const limit = PRIORITY_ORDER[threshold];
+  const findings = [...(report.recommendations || []), ...(report.additional_insights || [])];
+  return findings.some((finding) => (PRIORITY_ORDER[finding.priority] ?? 9) <= limit) ? 1 : 0;
 }
 
 function parseNonNegativeInteger(value, flag) {
@@ -218,10 +260,8 @@ function walk(dir, files) {
   }
 }
 
-async function analyzeJsonl(claudeDir, days, maxFiles) {
-  const now = Date.now();
-  const cutoff = days <= 0 ? null : now - days * 24 * 60 * 60 * 1000;
-  const state = {
+function emptyJsonlStats() {
+  return {
     files_scanned: 0,
     records_scanned: 0,
     records_in_window: 0,
@@ -249,6 +289,12 @@ async function analyzeJsonl(claudeDir, days, maxFiles) {
     sidechain_records: 0,
     assistant_calls: 0,
   };
+}
+
+async function analyzeJsonl(claudeDir, days, maxFiles) {
+  const now = Date.now();
+  const cutoff = days <= 0 ? null : now - days * 24 * 60 * 60 * 1000;
+  const state = emptyJsonlStats();
 
   const toolUseIds = new Map();
   const files = listJsonlFiles(path.join(claudeDir, "projects"), maxFiles);
@@ -352,8 +398,48 @@ function analyzeToolUse(toolName, input, state) {
   }
 }
 
+// Split on statement separators outside quotes. Pipes stay inside a statement so pipe-to-shell still matches.
+function shellStatements(command) {
+  const statements = [];
+  let current = "";
+  let quote = null;
+  for (let i = 0; i < command.length; i += 1) {
+    const char = command[i];
+    if (quote) {
+      if (char === quote) quote = null;
+      current += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+    const two = command.slice(i, i + 2);
+    if (char === ";" || char === "\n" || two === "&&" || two === "||") {
+      statements.push(current);
+      current = "";
+      if (two === "&&" || two === "||") i += 1;
+      continue;
+    }
+    current += char;
+  }
+  statements.push(current);
+  return statements.filter((statement) => statement.trim());
+}
+
 function commandRisks(command) {
-  return RISKY_COMMAND_PATTERNS.filter(([, , pattern]) => pattern.test(command)).map(([severity, label]) => [severity, label]);
+  const statements = shellStatements(command);
+  const seen = new Set();
+  const risks = [];
+  for (const [severity, label, pattern] of RISKY_COMMAND_PATTERNS) {
+    if (seen.has(label)) continue;
+    if (statements.some((statement) => pattern.test(statement))) {
+      seen.add(label);
+      risks.push([severity, label]);
+    }
+  }
+  return risks;
 }
 
 function permissionRisks(rule) {
@@ -456,7 +542,7 @@ function analyzeSettings(settings) {
     model: settings.model ?? null,
     effortLevel: settings.effortLevel ?? null,
     fastMode: settings.fastMode ?? null,
-    autoMode_configured: isPlainObject(settings.autoMode),
+    autoMode_configured: isPlainObject(settings.autoMode) && "environment" in settings.autoMode,
     sandbox_configured: isPlainObject(settings.sandbox),
     permissions_defaultMode: permissions.defaultMode ?? null,
     permissions_allow_count: allowRules.length,
@@ -556,7 +642,7 @@ function buildRecommendations(settingsInfo, jsonlStats, lifetimeUsage) {
 
   if (["high", "xhigh", "max"].includes(settingsInfo.effortLevel)) {
     recommendations.push({
-      priority: "high",
+      priority: "medium",
       category: "effort",
       title: "Do not keep high effort as a global default",
       evidence: `Current user setting has \`effortLevel: ${settingsInfo.effortLevel}\`.`,
@@ -588,6 +674,26 @@ function buildRecommendations(settingsInfo, jsonlStats, lifetimeUsage) {
     });
   }
 
+  // The allowlist says what is permitted; the transcripts say what ran. Only the pair is actionable.
+  const executed = severityTotals(jsonlStats.bash_risks);
+  const unattended = mapValueSum(jsonlStats.permission_modes)
+    ? (jsonlStats.permission_modes.get("auto") || 0) + (jsonlStats.permission_modes.get("bypassPermissions") || 0)
+    : 0;
+  const unattendedShare = unattended / (mapValueSum(jsonlStats.permission_modes) || 1);
+  if (executed.critical.total && unattendedShare > 0.5) {
+    const named = [...executed.critical.labels, ...executed.high.labels].slice(0, 4).join(", ");
+    recommendations.push({
+      priority: "high",
+      category: "executed-risk",
+      title: "Add deny rules for the risky commands your sessions actually run",
+      evidence:
+        `Transcripts show ${executed.critical.total} critical and ${executed.high.total} high-severity commands ` +
+        `(${named}) while ${pct(unattended, mapValueSum(jsonlStats.permission_modes))} of records ran in auto or bypassPermissions.`,
+      action:
+        "Your allow rules may look clean while risky commands still run unattended. Add targeted `deny` entries for the destructive patterns above, or scope them to `ask`, so unattended sessions cannot reach them.",
+    });
+  }
+
   if (["auto", "acceptEdits"].includes(settingsInfo.permissions_defaultMode) && !settingsInfo.sandbox_configured) {
     recommendations.push({
       priority: "medium",
@@ -610,15 +716,20 @@ function buildRecommendations(settingsInfo, jsonlStats, lifetimeUsage) {
 
   const cacheCreation = Object.values(lifetimeUsage).reduce((sum, values) => sum + (values.cache_creation_input_tokens || 0), 0);
   const cacheRead = Object.values(lifetimeUsage).reduce((sum, values) => sum + (values.cache_read_input_tokens || 0), 0);
+  const cacheRatio = cacheCreation > 0 ? cacheRead / cacheCreation : 0;
   if (cacheCreation > 100_000_000 || cacheRead > 1_000_000_000) {
+    const churnAdvice =
+      "Avoid switching models mid-session when the context is large, and start large-context work in the right profile instead of rebuilding the cache.";
     recommendations.push({
       priority: settingsInfo.has_prompt_cache_1h ? "low" : "medium",
       category: "context",
       title: settingsInfo.has_prompt_cache_1h ? "Keep 1-hour prompt caching enabled" : "Enable 1-hour prompt caching for repeated large contexts",
-      evidence: `Lifetime cache creation/read tokens are high (${compactNumber(cacheCreation)} create, ${compactNumber(cacheRead)} read).`,
+      evidence:
+        `Lifetime cache creation/read tokens are high (${compactNumber(cacheCreation)} create, ${compactNumber(cacheRead)} read` +
+        `${cacheRatio ? `, ${cacheRatio.toFixed(1)}x read/create` : ""}).`,
       action: settingsInfo.has_prompt_cache_1h
-        ? "Keep `ENABLE_PROMPT_CACHING_1H=1`; for very large repo planning, start directly in an Opus planning profile instead of switching models mid-session."
-        : "Add `\"ENABLE_PROMPT_CACHING_1H\": \"1\"` under `env` if your billing/plan supports it.",
+        ? `Keep \`ENABLE_PROMPT_CACHING_1H=1\`. ${churnAdvice}`
+        : `Add \`"ENABLE_PROMPT_CACHING_1H": "1"\` under \`env\` if your billing/plan supports it. ${churnAdvice}`,
     });
   }
 
@@ -634,13 +745,15 @@ function buildRecommendations(settingsInfo, jsonlStats, lifetimeUsage) {
   }
 
   const records = jsonlStats.records_in_window || 0;
-  if (records && jsonlStats.sidechain_records / records > 0.1) {
+  if (records && jsonlStats.sidechain_records / records > 0.05) {
     recommendations.push({
       priority: "medium",
       category: "subagents",
-      title: "Set a default subagent model",
+      title: "Set a default subagent model and track what it buys you",
       evidence: `Sidechain/subagent records are ${pct(jsonlStats.sidechain_records, records)} of recent JSONL records.`,
-      action: "Use `CLAUDE_CODE_SUBAGENT_MODEL=sonnet` for code-changing subagents, or `haiku` for search/summarize/classify subagents to avoid accidental Opus spend.",
+      action:
+        "Use `CLAUDE_CODE_SUBAGENT_MODEL=sonnet` for code-changing subagents, or `haiku` for search/summarize/classify subagents, to avoid accidental Opus spend. " +
+        "Then check whether subagents actually reduce wall-clock time or just multiply context and tool usage — reserve Opus for synthesis decisions.",
     });
   }
 
@@ -705,12 +818,17 @@ function buildAdditionalInsights(settingsInfo, jsonlStats, lifetimeUsage, localS
   const lowRisky = Object.entries(settingsInfo.risky_allow || {})
     .filter(([key]) => key.startsWith("low:"))
     .reduce((sum, [, count]) => sum + count, 0);
-  if (settingsInfo.permissions_allow_count > 100 || lowRisky > 20) {
+  const bulkyAllowlist = settingsInfo.permissions_allow_count > 100;
+  if (bulkyAllowlist || lowRisky > 20) {
+    // Name the condition that actually tripped, so the evidence is not led by the number that did not.
+    const reasons = [];
+    if (bulkyAllowlist) reasons.push(`the global allowlist has grown to ${settingsInfo.permissions_allow_count} rules`);
+    if (lowRisky > 20) reasons.push(`${lowRisky} of them are low-signal one-off rules`);
     insights.push({
       priority: "medium",
       category: "permission-hygiene",
       title: "Prune allowlist drift",
-      evidence: `Global allow rules: ${settingsInfo.permissions_allow_count}; low-signal one-off rules detected: ${lowRisky}.`,
+      evidence: `Flagged because ${reasons.join(" and ")}.`,
       action: "Delete UUID/EOF/done one-off allows and move project-specific or temporary permissions out of global settings. A large allowlist makes `auto` less predictable and harder to audit.",
     });
   }
@@ -726,17 +844,6 @@ function buildAdditionalInsights(settingsInfo, jsonlStats, lifetimeUsage, localS
     });
   }
 
-  const cacheCreation = Object.values(lifetimeUsage).reduce((sum, values) => sum + (values.cache_creation_input_tokens || 0), 0);
-  const cacheRead = Object.values(lifetimeUsage).reduce((sum, values) => sum + (values.cache_read_input_tokens || 0), 0);
-  if (cacheCreation > 0 && cacheRead / cacheCreation > 8) {
-    insights.push({
-      priority: "low",
-      category: "cache-efficiency",
-      title: "Prompt caching is a major part of your economics",
-      evidence: `Cache read/create ratio is ${(cacheRead / cacheCreation).toFixed(1)}x (${compactNumber(cacheRead)} read vs ${compactNumber(cacheCreation)} create).`,
-      action: "Avoid switching models mid-session when the context is large. Start large-context work in the right profile, keep 1h caching enabled, and reduce global prompt churn.",
-    });
-  }
 
   const mcpCalls = [...jsonlStats.tool_use.entries()]
     .filter(([name]) => name.startsWith("mcp__"))
@@ -762,18 +869,21 @@ function buildAdditionalInsights(settingsInfo, jsonlStats, lifetimeUsage, localS
     });
   }
 
-  const records = jsonlStats.records_in_window || 0;
-  if (records && jsonlStats.sidechain_records / records > 0.05) {
-    insights.push({
-      priority: "medium",
-      category: "delegation",
-      title: "Audit subagent return on investment",
-      evidence: `Sidechain/subagent records are ${pct(jsonlStats.sidechain_records, records)} of recent records.`,
-      action: "Track whether subagents reduce wall-clock time or simply multiply context/tool usage. Use cheaper subagent models for exploration and reserve Opus for synthesis decisions.",
-    });
-  }
 
   return insights;
+}
+
+// bash_risks keys are "severity:label" counters; roll them up per severity and keep the labels.
+function severityTotals(risks) {
+  const out = { critical: { total: 0, labels: [] }, high: { total: 0, labels: [] } };
+  for (const [key, count] of risks || []) {
+    const [severity, label] = key.split(":");
+    if (!out[severity]) continue;
+    out[severity].total += count;
+    out[severity].labels.push(label);
+  }
+  for (const bucket of Object.values(out)) bucket.labels.sort();
+  return out;
 }
 
 function estimateHookTriggers(settingsInfo, jsonlStats) {
@@ -953,6 +1063,7 @@ async function makeReport(options) {
   return {
     claude_dir: options.claudeDir,
     window_days: options.days,
+    heuristics_target_version: TARGETS_VERSION,
     settings: settingsInfo,
     local_state: localState,
     stats_cache: {
@@ -1003,11 +1114,32 @@ function printTextReport(report, options = {}) {
   const includeSnippets = options.snippets !== false;
   const lines = [];
   const push = (line = "") => lines.push(line);
-  const priorityOrder = { high: 0, medium: 1, low: 2 };
+  const priorityOrder = PRIORITY_ORDER;
   push("Claude Code Usage Advisor");
   push("=========================");
   push(`Claude dir: ${report.claude_dir}`);
   push(`JSONL window: ${report.window_days <= 0 ? "all history" : `${report.window_days} days`}`);
+  push();
+
+  // One severity-sorted list: a high-severity investigation must never sit below a medium recommendation.
+  const findings = [...report.recommendations, ...(report.additional_insights || [])].sort(
+    (a, b) => (priorityOrder[a.priority] ?? 9) - (priorityOrder[b.priority] ?? 9)
+  );
+  push("Findings");
+  push("--------");
+  for (const finding of findings) {
+    push(`[${finding.priority}] ${finding.category}: ${finding.title}`);
+    push(`  evidence: ${finding.evidence}`);
+    push(`  action: ${finding.action}`);
+  }
+  push();
+
+  push("Recommended launch profiles");
+  push("---------------------------");
+  for (const profile of report.launch_profiles) {
+    push(`- ${profile.name}: \`${profile.command}\``);
+    push(`  ${profile.use_when}`);
+  }
   push();
 
   const settings = report.settings;
@@ -1020,19 +1152,6 @@ function printTextReport(report, options = {}) {
   push(`autoMode configured: ${settings.autoMode_configured}`);
   push(`sandbox configured: ${settings.sandbox_configured}`);
   push(`env keys: ${settings.env_keys.length ? settings.env_keys.join(", ") : "(none)"}`);
-  push();
-
-  const usageEntries = Object.entries(report.stats_cache.modelUsage || {}).sort((a, b) => freshTotal(b[1]) - freshTotal(a[1]));
-  push("Lifetime model usage from stats-cache");
-  push("-------------------------------------");
-  if (usageEntries.length) {
-    const totalFresh = usageEntries.reduce((sum, [, values]) => sum + freshTotal(values), 0);
-    for (const [model, values] of usageEntries) {
-      push(`${model}: fresh=${compactNumber(freshTotal(values))} (${pct(freshTotal(values), totalFresh)}), cache_read=${compactNumber(values.cache_read_input_tokens || 0)}, output=${compactNumber(values.output_tokens || 0)}`);
-    }
-  } else {
-    push("No stats-cache modelUsage found.");
-  }
   push();
 
   const jsonl = report.jsonl;
@@ -1053,34 +1172,18 @@ function printTextReport(report, options = {}) {
   if (Object.keys(jsonl.bash_risks).length) push(`bash risk hits: ${JSON.stringify(jsonl.bash_risks)}`);
   push();
 
-  if (report.additional_insights && report.additional_insights.length) {
-    push("Additional investigations");
-    push("-------------------------");
-    const insights = [...report.additional_insights].sort((a, b) => (priorityOrder[a.priority] ?? 9) - (priorityOrder[b.priority] ?? 9));
-    for (const insight of insights) {
-      push(`[${insight.priority}] ${insight.category}: ${insight.title}`);
-      push(`  evidence: ${insight.evidence}`);
-      push(`  action: ${insight.action}`);
+  const usageEntries = Object.entries(report.stats_cache.modelUsage || {}).sort((a, b) => freshTotal(b[1]) - freshTotal(a[1]));
+  push("Lifetime model usage from stats-cache");
+  push("-------------------------------------");
+  if (usageEntries.length) {
+    const totalFresh = usageEntries.reduce((sum, [, values]) => sum + freshTotal(values), 0);
+    for (const [model, values] of usageEntries) {
+      push(`${model}: fresh=${compactNumber(freshTotal(values))} (${pct(freshTotal(values), totalFresh)}), cache_read=${compactNumber(values.cache_read_input_tokens || 0)}, output=${compactNumber(values.output_tokens || 0)}`);
     }
-    push();
+  } else {
+    push("No stats-cache modelUsage found.");
   }
-
-  push("Recommended launch profiles");
-  push("---------------------------");
-  for (const profile of report.launch_profiles) {
-    push(`- ${profile.name}: \`${profile.command}\``);
-    push(`  ${profile.use_when}`);
-  }
-  push();
-
-  push("Recommendations");
-  push("---------------");
-  const recs = [...report.recommendations].sort((a, b) => (priorityOrder[a.priority] ?? 9) - (priorityOrder[b.priority] ?? 9));
-  for (const rec of recs) {
-    push(`[${rec.priority}] ${rec.category}: ${rec.title}`);
-    push(`  evidence: ${rec.evidence}`);
-    push(`  action: ${rec.action}`);
-  }
+  push("For per-model spend and billing blocks, use ccusage. This section is context, not accounting.");
 
   if (includeSnippets) {
     push();
@@ -1095,15 +1198,18 @@ function printTextReport(report, options = {}) {
     push("Optional subagent overlay:");
     push(JSON.stringify(report.settings_snippets.subagent_overlay, null, 2));
   }
+  push();
+  push(`Heuristics target ${report.heuristics_target_version}.`);
   return lines.join("\n");
 }
 
 function renderHtmlReport(report) {
   const settings = report.settings;
   const jsonl = report.jsonl;
-  const priorityOrder = { high: 0, medium: 1, low: 2 };
-  const recommendations = [...(report.recommendations || [])].sort((a, b) => (priorityOrder[a.priority] ?? 9) - (priorityOrder[b.priority] ?? 9));
-  const insights = [...(report.additional_insights || [])].sort((a, b) => (priorityOrder[a.priority] ?? 9) - (priorityOrder[b.priority] ?? 9));
+  const priorityOrder = PRIORITY_ORDER;
+  const findings = [...(report.recommendations || []), ...(report.additional_insights || [])].sort(
+    (a, b) => (priorityOrder[a.priority] ?? 9) - (priorityOrder[b.priority] ?? 9)
+  );
   const usageEntries = Object.entries(report.stats_cache.modelUsage || {}).sort((a, b) => freshTotal(b[1]) - freshTotal(a[1]));
   const totalFresh = usageEntries.reduce((sum, [, values]) => sum + freshTotal(values), 0);
   const generatedAt = new Date().toISOString();
@@ -1262,6 +1368,11 @@ function renderHtmlReport(report) {
     </header>
 
     <section>
+      <h2>Findings</h2>
+      ${cards(findings)}
+    </section>
+
+    <section>
       <h2>Current Settings</h2>
       <div class="grid">
         ${metric("Model", settings.model || "default")}
@@ -1273,16 +1384,6 @@ function renderHtmlReport(report) {
         ${metric("Env scrub", settings.has_subprocess_env_scrub ? "enabled" : "disabled")}
         ${metric("Global CLAUDE.md", report.local_state.claude_md.exists ? `${report.local_state.claude_md.lines} lines` : "missing")}
       </div>
-    </section>
-
-    <section>
-      <h2>Additional Investigations</h2>
-      ${cards(insights)}
-    </section>
-
-    <section>
-      <h2>Recommendations</h2>
-      ${cards(recommendations)}
     </section>
 
     <section>
@@ -1351,6 +1452,7 @@ function renderHtmlReport(report) {
         <pre>${h(JSON.stringify(report.settings_snippets.subagent_overlay, null, 2))}</pre>
       </details>
     </section>
+    <p class="meta">Heuristics target ${h(report.heuristics_target_version)}.</p>
   </main>
 </body>
 </html>`;
@@ -1474,12 +1576,13 @@ async function main() {
       console.log(printTextReport(report, { snippets: args.snippets }));
       if (args.htmlPath) console.log(`\nHTML report written to ${args.htmlPath}`);
     }
-    return 0;
+    return failOnExitCode(report, args.failOn);
   } catch (error) {
     console.error(`Error: ${error.message || error}`);
     console.error();
     console.error(usage());
-    return 1;
+    // 2, not 1: a broken invocation must stay distinguishable from a --fail-on policy hit.
+    return 2;
   }
 }
 
@@ -1491,8 +1594,11 @@ if (require.main === module) {
 
 module.exports = {
   analyzeSettings,
+  buildAdditionalInsights,
   buildRecommendations,
   commandRisks,
+  emptyJsonlStats,
+  failOnExitCode,
   familyTokenTotals,
   freshTotal,
   makeReport,

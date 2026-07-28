@@ -4,11 +4,21 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![No dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 
-Stop guessing which Claude Code model and settings to use.
+**Your settings say what you intended. Your transcripts say what you actually do.**
 
-Claude Code Usage Advisor analyzes your local Claude Code history and recommends practical launch profiles for Sonnet, Opus plan mode, Haiku, effort level, permission mode, sandboxing, and prompt caching.
+Claude Code Usage Advisor reads both and reports where they disagree — then recommends the model, effort level, permission mode, sandboxing, and launch profiles that fit your real workload rather than your assumed one.
 
 It is read-only, zero-dependency, and runs locally against `~/.claude` (the Claude Code CLI default on macOS, Linux, and Windows).
+
+Heuristics target Claude Code 2.1.220 (2026-07).
+
+### What this is not
+
+**Not a cost tracker.** To know what you spent, use [ccusage](https://github.com/ccusage/ccusage). It is the tool for token and cost accounting and this does not try to replace it — the lifetime token section here is context for the routing advice, not a bill.
+
+**Not a repo config linter.** To check a project's committed `.claude/` — hooks pointing at missing scripts, hardcoded secrets in `.mcp.json`, a `settings.local.json` that got committed by mistake — use [cc-doctor](https://github.com/Hiro-012/cc-doctor). It does static configuration checks and secret scanning, and it covers cases this tool does not.
+
+The three do not overlap much. ccusage answers *how much did this cost*, cc-doctor answers *is this repo's config sane*, and this answers *does my setup match how I actually work* — which needs the transcripts, and is the part neither of the others reads.
 
 ## Install
 
@@ -69,11 +79,11 @@ cc-advisor --days 7
 cc-advisor --html reports/claude-code-insights.html
 ```
 
-**Feed it into a dashboard or pipeline.** JSON contains the same recommendations, evidence, and investigations as the text report.
+**Feed it into a dashboard or pipeline.** JSON carries the same evidence as the text report. It keeps `recommendations` and `additional_insights` as separate arrays — the single `Findings` list is a rendering choice, so merge them yourself to match what the report shows:
 
 ```bash
 cc-advisor --json > advisor.json
-jq '.recommendations[] | select(.severity=="high")' advisor.json
+jq '[.recommendations[], .additional_insights[]] | map(select(.priority == "high"))' advisor.json
 ```
 
 **Speed up runs on a huge `~/.claude`.** Scans newest JSONL files first.
@@ -95,6 +105,14 @@ cc-advisor --claude-dir /mnt/backup/2026-05/claude
 cc-advisor --no-snippets
 ```
 
+**Gate a pipeline on findings.** Exits `1` when any recommendation or investigation is at least that severe, `0` otherwise. A crash or a bad flag exits `2`, so a broken run never looks like a clean one. Without `--fail-on` a successful run always exits `0`, because findings are advisory by default.
+
+Findings top out at `high`, so `high` is the gate to use; `medium` will fire on almost any real configuration.
+
+```bash
+cc-advisor --fail-on high --no-snippets
+```
+
 ### Options
 
 ```text
@@ -104,44 +122,39 @@ cc-advisor --no-snippets
 --json                Print machine-readable JSON
 --html <path>         Write a self-contained HTML report
 --no-snippets         Hide settings snippets in text output
+--fail-on <priority>  Exit 1 when a finding is at least this severe (high|medium|low)
+                      Exit 2 is reserved for errors, so it never looks like a finding
 --help                Show help
 ```
 
 ## Example Output
 
-Abridged from a real run. The full report also includes Current settings, Lifetime model usage, Recent usage patterns, Top tools / Bash command families, and (unless `--no-snippets`) ready-to-paste `settings.json` blocks.
+Every finding — whether it asks you to change a setting or to go look at something — lands in one `Findings` list sorted by severity, so the worst thing is always first. After that come launch profiles, current settings, recent usage patterns, top tools / Bash command families, lifetime model usage, and (unless `--no-snippets`) ready-to-paste `settings.json` blocks.
+
+Abridged from an actual run against a sample directory:
 
 ```text
-Additional investigations
--------------------------
-[high] workflow-friction: Investigate tool error hot spots
-  evidence: Tool error rate is 33.3% (1/3). Bash 50.0% (1/2)
-  action: Look at failed Bash/Edit/WebFetch patterns first. Repeated tool errors
-    usually mean missing project scripts, stale permissions, brittle hooks, or
-    prompts that ask Claude to guess commands instead of inspecting repo affordances.
-
-Recommended launch profiles
----------------------------
-- Daily implementation: `claude --model sonnet --permission-mode acceptEdits --effort medium`
-- Deep planning then execution: `claude --model opus --permission-mode plan --effort xhigh`
-- Trusted autonomous work: `claude --model sonnet --permission-mode auto --effort high`
-- Large-context planning: `claude --model opus --permission-mode plan --effort xhigh --add-dir <extra-dir>`
-- Cheap/simple triage: `claude --model haiku --permission-mode default --effort low`
-
-Recommendations
----------------
+Findings
+--------
 [high] model: Make Sonnet the execution default and reserve Opus for planning
-  evidence: Opus is 99.7% of non-cache tokens while recent sessions are
-    tool-heavy (1.50 tool calls/assistant call).
-  action:   Use `claude --model opus --permission-mode plan --effort xhigh` for
+  evidence: Opus is 99.6% of non-cache tokens while recent sessions are tool-heavy
+    (1.00 tool calls/assistant call).
+  action: Use `claude --model opus --permission-mode plan --effort xhigh` for
     ambiguous work, then let execution run on Sonnet.
-
-[high] permissions: Move risky always-allow permissions to ask/deny
-  evidence: Detected 2 critical/high-risk allow rules, including destructive
-    shell, cloud/cluster mutation, secret, or network pipe-to-shell patterns.
-  action:   Keep read-only commands in `allow`; move deploy, destructive, secret,
-    and broad network shell commands to `ask`.
+[high] executed-risk: Add deny rules for the risky commands your sessions actually run
+  evidence: Transcripts show 25 critical and 16 high-severity commands (force-push,
+    recursive-delete, kubectl-delete, secret-manager-read) while 90.4% of records
+    ran in auto or bypassPermissions.
+  action: Your allow rules may look clean while risky commands still run unattended.
+    Add targeted `deny` entries for the destructive patterns above, or scope them to
+    `ask`, so unattended sessions cannot reach them.
+[medium] effort: Do not keep high effort as a global default
+  evidence: Current user setting has `effortLevel: xhigh`.
+  action: Set global `effortLevel` to `medium`; use `--effort high` or `--effort
+    xhigh` only for design, review, migrations, and production-risk decisions.
 ```
+
+The second one is the whole point. A static config check reads that allowlist and sees two harmless rules. Only the transcripts show that 25 destructive commands ran anyway, almost always in a mode where nobody was asked.
 
 Every recommendation cites the evidence it's based on, so you can decide whether a heuristic fits your situation before applying the suggested action.
 
@@ -163,6 +176,10 @@ The advisor combines:
 - Recent model/tool/permission mode patterns from JSONL transcripts
 - Risk classification for current `permissions.allow` rules
 - Heuristics from Claude Code's current model and settings behavior
+
+The cross-join is the point. A static read of `settings.json` can tell you a rule looks risky; it cannot tell you that your Opus share is 99.7% of non-cache tokens while your sessions average 1.5 tool calls per turn (route execution to Sonnet), or that the hooks you configured are firing thousands of times per window against your real Bash/Edit/Write volume, or that 25 destructive commands ran in a window where 90% of your records were in an unattended permission mode. Those findings only exist if something reads the transcripts.
+
+Every report footer stamps the Claude Code version the heuristics were written for, so you can tell when they have drifted.
 
 Core routing policy:
 
